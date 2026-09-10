@@ -740,10 +740,15 @@ struct SharingSettings: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if store.syncEnabled {
+                    Button("Reset sync") {
+                        Task { await CloudSync.shared.resetAndResync() }
+                    }
+                }
             } header: {
                 Text("Shared with")
             } footer: {
-                Text("Everything is shared: events, actions, birthdays, school dates and calendars. Whoever you invite can add and edit, and their changes appear on your phone. Per-calendar sharing isn't possible yet — CloudKit shares a whole zone.")
+                Text("Reset sync forgets what CloudKit has recorded and offers everything up again from this phone. Nothing is deleted locally.\n\nEverything is shared: events, actions, birthdays, school dates and calendars. Whoever you invite can add and edit, and their changes appear on your phone. Per-calendar sharing isn't possible yet — CloudKit shares a whole zone.")
             }
         }
         .navigationTitle("Sharing")

@@ -327,7 +327,7 @@ struct DayView: View {
 
     private func hourGrid(_ items: [Item]) -> some View {
         let lowHour = min(items.map { $0.start / 60 }.min() ?? 8, 8)
-        let highHour = max(items.map { Int(ceil(Double($0.effectiveEnd) / 60)) }.max() ?? 18, 18)
+        let highHour = max(items.map { Int(ceil(Double($0.endWithinDay) / 60)) }.max() ?? 18, 18)
         let hours = Array(lowHour..<highHour)
         let lanes = assignLanes(items)
         let laneCount = (lanes.values.max() ?? 0) + 1
@@ -355,7 +355,7 @@ struct DayView: View {
                 ForEach(items) { item in
                     let lane = lanes[item.id] ?? 0
                     let top = CGFloat(item.start - lowHour * 60) / 60 * hourHeight
-                    let height = max(CGFloat(item.effectiveEnd - item.start) / 60 * hourHeight - 4, 34)
+                    let height = max(CGFloat(item.endWithinDay - item.start) / 60 * hourHeight - 4, 34)
 
                     Button { route = .detail(item) } label: {
                         HStack(alignment: .top, spacing: 9) {
@@ -398,9 +398,9 @@ struct DayView: View {
             var lane = 0
             while lane < laneEnds.count, laneEnds[lane] > item.start { lane += 1 }
             if lane == laneEnds.count {
-                laneEnds.append(item.effectiveEnd)
+                laneEnds.append(item.endWithinDay)
             } else {
-                laneEnds[lane] = item.effectiveEnd
+                laneEnds[lane] = item.endWithinDay
             }
             result[item.id] = lane
         }
@@ -750,7 +750,7 @@ struct DayView: View {
                 modePill("Hours", isOn: mode == .grid) {
                     withAnimation(.easeOut(duration: 0.15)) { mode = .grid }
                 }
-                PillButton(title: "ADD") { route = .edit(Item(day: day.startOfDay)) }
+                PillButton(title: "ADD") { route = .edit(Item.draft(on: day)) }
             }
         }
         .foregroundStyle(theme.onAccent)

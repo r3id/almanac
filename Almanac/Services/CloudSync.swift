@@ -127,6 +127,25 @@ final class CloudSync {
 
     // MARK: Local changes
 
+    /// Forgets everything CloudKit-side and starts again from what's on disk.
+    ///
+    /// Sync can get stuck in ways no amount of retrying fixes — a half-migrated
+    /// schema, metadata for records that were wiped server-side. Rather than
+    /// leave that as a reinstall, this drops the local metadata and re-offers
+    /// every record.
+    func resetAndResync() async {
+        privateEngine = nil
+        sharedEngine = nil
+        UserDefaults.standard.removeObject(forKey: "sync.systemFields")
+        UserDefaults.standard.removeObject(forKey: "sync.private")
+        UserDefaults.standard.removeObject(forKey: "sync.shared")
+        hasSyncedBefore = false
+        status = .off
+
+        guard let store else { return }
+        await start(store: store)
+    }
+
     func recordChanged(_ type: SyncType, id: String) {
         guard let engine = privateEngine else { return }
         engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID(type, id))])
@@ -213,6 +232,57 @@ final class CloudSync {
         }
     }
 
+    // MARK: Record metadata
+
+    /// CloudKit's own fields for each record — most importantly the change tag
+    /// that says which version we last saw.
+    ///
+    /// Without these, every save is built from scratch and the server reads it
+    /// as an insert: fine the first time, "record to insert already exists"
+    /// every time after. Keeping them turns saves into updates.
+    private var systemFields: [String: Data] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "sync.systemFields"),
+                  let map = try? JSONDecoder().decode([String: Data].self, from: data)
+            else { return [:] }
+            return map
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            UserDefaults.standard.set(data, forKey: "sync.systemFields")
+        }
+    }
+
+    private func remember(_ record: CKRecord) {
+        let coder = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: coder)
+        coder.finishEncoding()
+
+        var map = systemFields
+        map[record.recordID.recordName] = coder.encodedData
+        systemFields = map
+    }
+
+    private func forget(_ recordID: CKRecord.ID) {
+        var map = systemFields
+        map.removeValue(forKey: recordID.recordName)
+        systemFields = map
+    }
+
+    /// A record carrying the server's metadata where we have it, so the save is
+    /// an update rather than an insert.
+    private func record(for recordID: CKRecord.ID, type: SyncType) -> CKRecord {
+        guard let data = systemFields[recordID.recordName],
+              let coder = try? NSKeyedUnarchiver(forReadingFrom: data)
+        else {
+            return CKRecord(recordType: type.rawValue, recordID: recordID)
+        }
+        coder.requiresSecureCoding = true
+        let existing = CKRecord(coder: coder)
+        coder.finishDecoding()
+        return existing ?? CKRecord(recordType: type.rawValue, recordID: recordID)
+    }
+
     // MARK: Engine state
 
     private var hasSyncedBefore: Bool {
@@ -243,18 +313,51 @@ extension CloudSync: CKSyncEngineDelegate {
 
         case .fetchedRecordZoneChanges(let changes):
             for modification in changes.modifications {
+                remember(modification.record)
                 apply(modification.record)
             }
             for deletion in changes.deletions {
+                forget(deletion.recordID)
                 guard let parsed = parse(deletion.recordID) else { continue }
                 store?.applyRemoteDelete(type: parsed.type, id: parsed.id)
             }
 
         case .sentRecordZoneChanges(let sent):
-            // A failed save usually means the server has a newer copy; take it.
+            for record in sent.savedRecords {
+                remember(record)
+            }
+            for deletion in sent.deletedRecordIDs {
+                forget(deletion)
+            }
+
             for failure in sent.failedRecordSaves {
-                if let serverRecord = failure.error.serverRecord {
-                    apply(serverRecord)
+                let recordID = failure.record.recordID
+
+                switch failure.error.code {
+                case .serverRecordChanged:
+                    // The server has a version we hadn't seen. Adopt its
+                    // metadata and send ours again, so the later edit wins
+                    // rather than the save simply failing forever.
+                    if let serverRecord = failure.error.serverRecord {
+                        remember(serverRecord)
+                        syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    }
+
+                case .unknownItem:
+                    // Gone from the server; drop the stale metadata so the next
+                    // attempt is a clean insert.
+                    forget(recordID)
+                    syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+
+                case .zoneNotFound:
+                    forget(recordID)
+                    syncEngine.state.add(
+                        pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))]
+                    )
+                    syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+
+                default:
+                    break
                 }
             }
 
@@ -292,9 +395,9 @@ extension CloudSync: CKSyncEngineDelegate {
                     syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     continue
                 }
-                let record = CKRecord(recordType: parsed.type.rawValue, recordID: recordID)
-                record["payload"] = payload as CKRecordValue
-                toSave.append(record)
+                let outgoing = record(for: recordID, type: parsed.type)
+                outgoing["payload"] = payload as CKRecordValue
+                toSave.append(outgoing)
 
             case .deleteRecord(let recordID):
                 toDelete.append(recordID)

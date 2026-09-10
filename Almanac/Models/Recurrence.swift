@@ -70,6 +70,51 @@ nonisolated struct Recurrence: Codable, Hashable {
     }
 
     /// Whether a repeat lands on this day, given the day the series starts.
+    /// A sensible last day for this frequency.
+    ///
+    /// Defaulting to a year out meant a weekly series starting in November
+    /// proposed the following November — the right day and month, the wrong
+    /// year, and easy to miss because only the year was wrong.
+    func defaultEnd(from start: Date) -> Date {
+        let calendar = Calendar.current
+
+        // Deliberately short — a handful of occurrences in every case. A default
+        // you'd want to change is better than one long enough to accept without
+        // reading, which is how a November series ended up running to 2027.
+        let component: Calendar.Component
+        let amount: Int
+
+        switch frequency {
+        case .never:       return start
+        case .daily:       component = .day;   amount = 7
+        case .weekly:      component = .day;   amount = 7 * 6
+        case .fortnightly: component = .day;   amount = 14 * 6
+        case .monthly:     component = .month; amount = 3
+        case .yearly:      component = .year;  amount = 3
+        }
+
+        // Months and years by calendar rather than by day count, so three months
+        // from 30 November is the end of February and not the 2nd of March.
+        return calendar.date(byAdding: component, value: amount, to: start.startOfDay)
+            ?? start
+    }
+
+    /// How many times this falls between the start and the last day, so the
+    /// editor can show what the date actually means.
+    func occurrenceCount(from start: Date, limit: Int = 400) -> Int? {
+        guard repeats, let until else { return nil }
+
+        var count = 1
+        var probe = start.startOfDay
+        let last = until.startOfDay
+
+        while probe < last, count < limit {
+            probe = probe.adding(days: 1)
+            if falls(on: probe, seriesStart: start) { count += 1 }
+        }
+        return count
+    }
+
     func falls(on day: Date, seriesStart: Date) -> Bool {
         guard repeats else { return false }
 

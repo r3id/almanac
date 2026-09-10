@@ -157,6 +157,6 @@ struct RootView: View {
     }
 
     private func newItem(on day: Date) -> Item {
-        Item(day: day.startOfDay)
+        Item.draft(on: day)
     }
 }

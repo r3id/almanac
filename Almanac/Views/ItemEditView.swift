@@ -11,6 +11,14 @@ struct ItemEditView: View {
 
     @State private var startDate: Date = .now
     @State private var endDate: Date = .now
+    /// The length of the event, which is what actually stays fixed when the
+    /// start moves. Shifting the end by a delta instead meant opening the editor
+    /// — which sets the start — nudged the end by however far the seeded start
+    /// happened to be from the current time.
+    @State private var duration: TimeInterval = 3600
+    /// The date the editor opened on, so moving a repeating event can be told
+    /// apart from simply editing one of its occurrences.
+    @State private var openedOn: Date = .now
 
     @State private var placeQuery = ""
     @State private var search = PlaceSearch()
@@ -62,19 +70,29 @@ struct ItemEditView: View {
                                 // Moving the start carries the end with it, so an
                                 // hour-long thing stays an hour long. Every other
                                 // calendar does this and it's jarring when one doesn't.
-                                .onChange(of: startDate) { oldValue, newValue in
-                                    let shifted = endDate.addingTimeInterval(
-                                        newValue.timeIntervalSince(oldValue)
-                                    )
-                                    endDate = clamped(shifted, toDayOf: newValue)
+                                // Recomputed from the duration rather than
+                                // nudged, so it lands in the same place however
+                                // many times this runs.
+                                .onChange(of: startDate) { _, newValue in
+                                    endDate = newValue.addingTimeInterval(duration)
                                 }
 
                             DatePicker("Ends", selection: $endDate, displayedComponents: .hourAndMinute)
+                                // Setting the end is what defines the length;
+                                // from then on the start carries it.
                                 .onChange(of: endDate) { _, newValue in
-                                    // Dragging the end before the start would save
-                                    // a negative duration, so it stops at the start.
-                                    if newValue < startDate { endDate = startDate }
+                                    duration = ItemEditView.span(from: startDate, to: newValue)
                                 }
+
+                            // An end earlier than the start reads as the next
+                            // morning, which is what a late event usually is.
+                            // Snapping it back to the start made midnight
+                            // impossible to express.
+                            if crossesMidnight {
+                                Text("Ends the next day")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -95,7 +113,7 @@ struct ItemEditView: View {
                                 get: { draft.recurrence.until != nil },
                                 set: { on in
                                     draft.recurrence.until = on
-                                        ? draft.day.adding(days: 365)
+                                        ? draft.recurrence.defaultEnd(from: draft.day)
                                         : nil
                                 }
                             ))
@@ -104,12 +122,29 @@ struct ItemEditView: View {
                                 DatePicker(
                                     "Last day",
                                     selection: Binding(
-                                        get: { draft.recurrence.until ?? draft.day },
+                                        get: { draft.recurrence.until ?? seriesStart },
                                         set: { draft.recurrence.until = $0 }
                                     ),
-                                    in: draft.day...,
+                                    // Bounded by where the series began, not the
+                                    // occurrence you happened to open from. Using
+                                    // the latter made every date before today's
+                                    // occurrence unreachable — so shortening a
+                                    // series from a later date was impossible.
+                                    in: seriesStart...,
                                     displayedComponents: .date
                                 )
+
+                                // Spelling out the count makes a wrong year
+                                // obvious: "52 times" for something meant to run
+                                // till Christmas doesn't read as a typo, it reads
+                                // as a mistake.
+                                if let count = draft.recurrence.occurrenceCount(from: seriesStart) {
+                                    Text(count >= 400
+                                         ? "400+ times"
+                                         : "\(count) time\(count == 1 ? "" : "s") in total")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         Picker("If it lands on a non-working day", selection: $draft.recurrence.adjustment) {
@@ -454,15 +489,6 @@ struct ItemEditView: View {
         }
     }
 
-    /// Keeps a shifted time on the same calendar day. The model stores minutes
-    /// from midnight, so an event can't run past one.
-    private func clamped(_ date: Date, toDayOf reference: Date) -> Date {
-        let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: reference) { return date }
-        return date < reference
-            ? reference
-            : calendar.date(bySettingHour: 23, minute: 59, second: 0, of: reference) ?? reference
-    }
 
     private func exceptionDate(_ date: Date) -> String {
         let formatter = DateFormatter()
@@ -495,13 +521,46 @@ struct ItemEditView: View {
         )
     }
 
+    /// Seconds from start to end, treating an earlier end as the next day and
+    /// never returning a whole day or more.
+    nonisolated static func span(from start: Date, to end: Date) -> TimeInterval {
+        let calendar = Calendar.current
+        let startMinutes = calendar.component(.hour, from: start) * 60
+            + calendar.component(.minute, from: start)
+        let endMinutes = calendar.component(.hour, from: end) * 60
+            + calendar.component(.minute, from: end)
+        let minutes = endMinutes <= startMinutes
+            ? endMinutes + 24 * 60 - startMinutes
+            : endMinutes - startMinutes
+        return TimeInterval(minutes * 60)
+    }
+
+    /// Where the repeat actually starts. Editing a repeating event opens on the
+    /// occurrence you tapped, so `draft.day` is that date rather than the first.
+    private var seriesStart: Date {
+        (draft.seriesStart ?? draft.day).startOfDay
+    }
+
+    private var crossesMidnight: Bool {
+        let calendar = Calendar.current
+        let start = calendar.component(.hour, from: startDate) * 60
+            + calendar.component(.minute, from: startDate)
+        let end = calendar.component(.hour, from: endDate) * 60
+            + calendar.component(.minute, from: endDate)
+        return end <= start
+    }
+
     // MARK: Saving
 
     private func seedPickers() {
         let calendar = Calendar.current
         startDate = calendar.date(bySettingHour: draft.start / 60, minute: draft.start % 60, second: 0, of: draft.day) ?? draft.day
         let end = draft.end ?? (draft.start + 60)
-        endDate = calendar.date(bySettingHour: end / 60, minute: end % 60, second: 0, of: draft.day) ?? draft.day
+        // Wrapped for the picker, which only shows a time of day.
+        let endOfDay = end % (24 * 60)
+        endDate = calendar.date(bySettingHour: endOfDay / 60, minute: endOfDay % 60, second: 0, of: draft.day) ?? draft.day
+        duration = TimeInterval(max(end - draft.start, 15) * 60)
+        openedOn = draft.day.startOfDay
         Task { await refreshRoute() }
     }
 
@@ -510,6 +569,18 @@ struct ItemEditView: View {
         var item = draft
         item.title = draft.title.trimmingCharacters(in: .whitespaces)
         item.day = draft.day.startOfDay
+
+        // Editing a repeat opens on the occurrence you tapped, so saving used to
+        // write that date back as the series start — open December's instance,
+        // change the title, and the whole series jumped to December. The series
+        // keeps its own start, shifted only by however far the date was actually
+        // moved in the editor.
+        if draft.isOccurrence {
+            let moved = DayCount.between(openedOn, and: draft.day)
+            item.day = seriesStart.adding(days: moved)
+            item.seriesStart = nil
+            item.nominalDay = nil
+        }
 
         if draft.kind == .birthday {
             // A birthday is an all-day yearly repeat by definition; setting it
@@ -539,8 +610,12 @@ struct ItemEditView: View {
         } else {
             item.start = calendar.component(.hour, from: startDate) * 60
                 + calendar.component(.minute, from: startDate)
-            item.end = calendar.component(.hour, from: endDate) * 60
+            var end = calendar.component(.hour, from: endDate) * 60
                 + calendar.component(.minute, from: endDate)
+            // Stored as minutes from the start day, so a midnight finish is
+            // 1440 rather than a second date to keep in step.
+            if end <= item.start { end += 24 * 60 }
+            item.end = end
         }
 
         store.save(item)

@@ -215,13 +215,50 @@ nonisolated struct Item: Identifiable, Codable, Hashable {
     /// End used for layout and for "free afterwards" logic.
     var effectiveEnd: Int { max(end ?? (start + 60), start + 15) }
 
+    /// Runs past midnight. Stored as minutes from the start day, so 11pm to
+    /// midnight is 1380 to 1440 rather than a second date to keep in step.
+    var endsNextDay: Bool { effectiveEnd > 24 * 60 }
+
+    /// A new event at the next whole hour, running for an hour.
+    ///
+    /// A fixed 9am default meant almost every event needed both times changing.
+    /// Rounding up to the next hour is what Apple's calendar does, and "add
+    /// something" nearly always means soon.
+    static func draft(on day: Date) -> Item {
+        let calendar = Calendar.current
+        let now = Date.now
+
+        var hour = calendar.component(.hour, from: now)
+        if calendar.component(.minute, from: now) > 0 { hour += 1 }
+
+        // Past eleven at night there's no hour left to offer, and clamping back
+        // to 10pm proposes a time that's already gone. Tomorrow morning is the
+        // likelier intent, and it's visible rather than silent.
+        if hour >= 23 {
+            var item = Item(day: day.startOfDay.adding(days: 1))
+            item.start = 9 * 60
+            item.end = 10 * 60
+            return item
+        }
+
+        var item = Item(day: day.startOfDay)
+        item.start = hour * 60
+        item.end = hour * 60 + 60
+        return item
+    }
+
+
+    /// What the day grid can actually draw, which stops at midnight.
+    var endWithinDay: Int { min(effectiveEnd, 24 * 60) }
+
     var timeLabel: String {
         if kind == .action { return "Action" }
         if kind == .birthday { return "Birthday" }
         if isAllDay { return "ALL DAY" }
         let s = Self.clock(start)
         guard let end else { return s }
-        return "\(s) → \(Self.clock(end))"
+        let label = "\(s) → \(Self.clock(end))"
+        return endsNextDay ? label + " +1" : label
     }
 
     static func clock(_ minutes: Int) -> String {

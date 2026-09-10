@@ -12,17 +12,31 @@ struct TimelineView: View {
     /// scroll position means the month header is derived rather than tracked —
     /// no geometry readers, no preference plumbing.
     @State private var topOffset: Int? = 0
+    /// Tracked separately from `topOffset`, which only settles after a scroll
+    /// ends — so the header used to sit on the old month the whole way down.
+    @State private var headerOffset: Int = 0
     @State private var forecast: [String: DayWeather] = [:]
 
     private let range = -21...98
     /// Where the tracked row sits in the visible area — the foot of the top third.
     private static let restingAnchor = UnitPoint(x: 0, y: 0.32)
+    private static let space = "timeline"
+    /// Where the header reads the month from, in points below the top edge.
+    private static let readingLine: CGFloat = 96
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(range, id: \.self) { offset in
                     dayRow(Date.now.startOfDay.adding(days: offset))
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: RowTopsKey.self,
+                                    value: [offset: proxy.frame(in: .named(Self.space)).minY]
+                                )
+                            }
+                        )
                 }
             }
             .scrollTargetLayout()
@@ -31,6 +45,13 @@ struct TimelineView: View {
         // today at the top edge tucked it under the header and its fade, which
         // is the one row you never want hidden.
         .scrollPosition(id: $topOffset, anchor: Self.restingAnchor)
+        .coordinateSpace(.named(Self.space))
+        .onPreferenceChange(RowTopsKey.self) { tops in
+            let next = TimelineView.month(from: tops, line: TimelineView.readingLine)
+            Task { @MainActor in
+                if let next, next != headerOffset { headerOffset = next }
+            }
+        }
         .scrollIndicators(.hidden)
         // Content runs under the status bar; the inset keeps the first row clear
         // of the header rather than a safe area doing it.
@@ -51,7 +72,15 @@ struct TimelineView: View {
     /// The month of the row at the anchor, which is the one your eye is on
     /// rather than whatever is scrolling out of view at the top.
     private var visibleMonth: Date {
-        Date.now.startOfDay.adding(days: topOffset ?? 0)
+        Date.now.startOfDay.adding(days: headerOffset)
+    }
+
+    /// The row crossing the reading line — the one your eye is on, rather than
+    /// whatever is sliding out of view at the very top.
+    nonisolated private static func month(from tops: [Int: CGFloat], line: CGFloat) -> Int? {
+        let above = tops.filter { $0.value <= line }
+        if let last = above.max(by: { $0.value < $1.value }) { return last.key }
+        return tops.min(by: { $0.value < $1.value })?.key
     }
 
     // MARK: Header
@@ -100,7 +129,10 @@ struct TimelineView: View {
 
             GlassGroup {
                 PillButton(title: "TODAY") {
-                    withAnimation(.easeOut(duration: 0.25)) { topOffset = 0 }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        topOffset = 0
+                        headerOffset = 0
+                    }
                 }
                 PillButton(title: "ADD", action: onAdd)
             }
@@ -271,5 +303,16 @@ struct TimelineView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE"
         return formatter.string(from: day).uppercased()
+    }
+}
+
+
+/// Each visible row reports where its top sits, so the header can name the month
+/// actually on screen. Only rendered rows report, so the dictionary stays small.
+private struct RowTopsKey: PreferenceKey {
+    static let defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }

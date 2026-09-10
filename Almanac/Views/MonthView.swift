@@ -18,6 +18,11 @@ struct MonthView: View {
     private let rowSpacing: CGFloat = 6
     private let markSpacing: CGFloat = 4
     private let markHeight: CGFloat = 3
+    /// The strip under each date holding the mark and the kit bag. Named once
+    /// and used by both the layout maths and the cell, because when the two
+    /// disagreed every row was 4pt taller than budgeted — invisible in a
+    /// five-row month, and 24pt of clipping in a six-row one.
+    private let markRowHeight: CGFloat = 10
 
     var body: some View {
         GeometryReader { geometry in
@@ -59,15 +64,16 @@ struct MonthView: View {
         let column = (size.width - sidePadding * 2) / 7
         let share = min(max(size.height * 0.46, 300), 430)
         let rowFromHeight = (share - rowSpacing * 5) / 6
+        let below = markSpacing + markRowHeight
 
         // Capped, and pulled well inside the column. Sized to the row alone the
         // discs grew until they touched, which turned the grid into a wall of
         // circles rather than dates that happen to be marked.
         let cell = max(
-            min(min(rowFromHeight - markSpacing - markHeight, column - 16), 38),
+            min(min(rowFromHeight - below, column - 16), 38),
             30
         )
-        let grid = (cell + markSpacing + markHeight) * 6 + rowSpacing * 5
+        let grid = (cell + below) * 6 + rowSpacing * 5
         return (cell, grid)
     }
 
@@ -212,16 +218,16 @@ struct MonthView: View {
                             .fill(mark.kind.tint)
                             .frame(
                                 width: needsKit ? cellSize * 0.26 : cellSize * 0.44,
-                                height: markHeight + 4
+                                height: markHeight
                             )
                     }
                     if needsKit {
                         Image(systemName: "bag.fill")
-                            .font(.system(size: 8.5))
+                            .font(.system(size: 9))
                             .foregroundStyle(theme.accent)
                     }
                 }
-                .frame(height: markHeight + 4)
+                .frame(height: markRowHeight)
                 .opacity(inMonth ? 1 : 0.3)
             }
             .frame(maxWidth: .infinity)
