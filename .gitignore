@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+.AppleDouble
+.LSOverride
+Icon?
+
+# Xcode — user state, not project state
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+# Keep the shared scheme so a fresh clone can build and run.
+!xcshareddata/
+!xcshareddata/**
+
+# Build output
+build/
+DerivedData/
+*.o
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/xcuserdata/
+
+# CocoaPods and Carthage
+Pods/
+Carthage/Build/
+
+# Provisioning and signing — never in a repo
+*.mobileprovision
+*.p12
+*.cer
+
+# Editors
+.idea/
+*.swp
+*~
